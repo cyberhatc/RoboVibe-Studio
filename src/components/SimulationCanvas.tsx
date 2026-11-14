@@ -21,6 +21,9 @@ import {
 const TRAIL_LENGTH = 60;
 const AUTOPILOT_SPEED = 155; // px/s along the active segment
 
+/** Base anchor is PERMANENTLY fixed at the dead-center origin of the world space. */
+const WORLD_ORIGIN: Vec2 = Object.freeze({ x: 0, y: 0 }) as Vec2;
+
 export default function SimulationCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -97,7 +100,7 @@ export default function SimulationCanvas() {
 
       const state = useSimStore.getState();
       const { linkLengths, obstacles, waypoints, autoPilot, damping } = state;
-      const base: Vec2 = { x: 0, y: 0 };
+      const base: Vec2 = { ...WORLD_ORIGIN }; // (0, 0) in translated world space
 
       /* ---- resolve (smooth) target -------------------------------- */
       let rawTarget: Vec2;
@@ -165,15 +168,20 @@ export default function SimulationCanvas() {
       trailRef.current.push({ ...ee });
       if (trailRef.current.length > TRAIL_LENGTH) trailRef.current.shift();
 
-      /* ================= DRAW ================= */
+      /* ================= DRAW =================
+       * Two explicit transform passes, both in device pixels:
+       *  1. Screen space: scale(dpr) only — background + grid, origin top-left
+       *  2. World space:  scale(dpr) * translate(cx, cy) — origin dead-center
+       *     so (0,0) is the arm base in world coordinates.
+       * ------------------------------------------------------------ */
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = "#09090b";
       ctx.fillRect(0, 0, W, H);
 
       drawGrid(ctx, W, H, cx, cy);
 
-      ctx.save();
-      ctx.translate(cx, cy);
+      // World space: device-pixel transform with the center offset folded in.
+      ctx.setTransform(dpr, 0, 0, dpr, dpr * cx, dpr * cy);
 
       // Max-reach boundary (dashed).
       const totalReach = linkLengths.reduce((a, b) => a + b, 0);
@@ -325,8 +333,6 @@ export default function SimulationCanvas() {
       ctx.fillStyle = "rgba(6, 182, 212, 0.9)";
       ctx.fillText(`T (${Math.round(eff.x)}, ${Math.round(-eff.y)})`, eff.x + 14, eff.y + 12);
 
-      ctx.restore();
-
       /* ---- throttled HUD sync (every 4th frame ≈ 15 Hz) ------------ */
       if (frameRef.current % 4 === 0) {
         setTelemetry({
@@ -347,8 +353,14 @@ export default function SimulationCanvas() {
   /* ------------------------------------------------------------------ */
   /* Pointer handling: drag obstacles / steer target                      */
   /* ------------------------------------------------------------------ */
+  /* Pointer → world coordinates: CSS-pixel space centered on (0, 0).
+   * Independent of devicePixelRatio by design — the ctx transform maps
+   * these same CSS px to sharp device pixels, and toWorld maps client px
+   * to the centered origin that (0,0)-dead-center world space uses. */
   const toWorld = useCallback((e: React.PointerEvent<HTMLCanvasElement>): Vec2 => {
     const rect = canvasRef.current!.getBoundingClientRect();
+    // rect.width / 2 === sizeRef.current.w / 2 (CSS pixels) — the same
+    // center used for the world-space ctx.setTransform offset.
     return {
       x: e.clientX - rect.left - rect.width / 2,
       y: e.clientY - rect.top - rect.height / 2,
